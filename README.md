@@ -78,4 +78,4 @@ app/src/main/java/com/echoflux/echo/
 
 ## About
 
-Made by Sumeet (echoflux) as a first Android app.
+Echo is a personal project by **echoflux**, built for people who love their own music library. Ideas and feedback are welcome, just open an issue.
