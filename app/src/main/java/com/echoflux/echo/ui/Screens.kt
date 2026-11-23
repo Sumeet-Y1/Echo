@@ -77,6 +77,10 @@ import com.echoflux.echo.ui.theme.OnLime
 import com.echoflux.echo.ui.theme.TextMid
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Edit
 
 sealed interface Detail {
     data class AlbumD(val albumId: Long) : Detail
@@ -438,7 +442,14 @@ fun PlaylistsScreen(
             }
             items(vm.playlists.keys.toList(), key = { it }) { name ->
                 ListRow(
-                    leading = { IconTile(Icons.AutoMirrored.Filled.QueueMusic) },
+                    leading = {
+                        val cover = vm.playlistCovers[name]
+                        if (cover != null) {
+                            ArtImage(cover, Modifier.size(56.dp), RoundedCornerShape(16.dp))
+                        } else {
+                            IconTile(Icons.AutoMirrored.Filled.QueueMusic)
+                        }
+                    },
                     title = name,
                     subtitle = "${vm.playlists[name]?.size ?: 0} songs",
                     onClick = { onOpen(Detail.PlaylistD(name)) },
@@ -475,7 +486,15 @@ fun DetailScreen(
     onAddToPlaylist: (Song) -> Unit
 ) {
     val (title, list) = resolveDetail(d, vm)
-    val art = list.firstOrNull()?.albumArtUri
+    val art: Any? = (if (d is Detail.PlaylistD) vm.playlistCovers[d.name] else null)
+        ?: list.firstOrNull()?.albumArtUri
+
+    var showAdd by remember { mutableStateOf(false) }
+    var showEdit by remember { mutableStateOf(false) }
+
+    val coverPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null && d is Detail.PlaylistD) vm.setPlaylistCover(d.name, uri) }
 
     Box(Modifier.fillMaxSize().background(Ink).blockTouches()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPad)) {
@@ -504,6 +523,16 @@ fun DetailScreen(
                                     contentDescription = "Back",
                                     tint = Color.White
                                 )
+                            }
+                            if (d is Detail.PlaylistD) {
+                                Spacer(Modifier.weight(1f))
+                                GlassCircle(onClick = { showEdit = true }) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Edit playlist",
+                                        tint = Color.White
+                                    )
+                                }
                             }
                         }
                         Spacer(Modifier.height(12.dp))
@@ -536,6 +565,16 @@ fun DetailScreen(
                                     tint = Color.White
                                 )
                             }
+
+                            if (d is Detail.PlaylistD) {
+                                GlassCircle(onClick = { showAdd = true }, size = 48.dp) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "Add songs",
+                                        tint = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -547,6 +586,71 @@ fun DetailScreen(
                 SongRow(vm, song, { vm.playFrom(list, index) }, onAddToPlaylist)
             }
         }
+    }
+    if (showEdit && d is Detail.PlaylistD) {
+        var newName by remember { mutableStateOf(d.name) }
+        val hasCover = vm.playlistCovers[d.name] != null
+        val taken = newName.trim().let { it != d.name && it in vm.playlists }
+        AlertDialog(
+            onDismissRequest = { showEdit = false },
+            title = { Text("Edit playlist") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { if (it.length <= 40) newName = it },
+                        singleLine = true,
+                        label = { Text("Playlist name") },
+                        isError = taken,
+                        supportingText = { if (taken) Text("You already have a playlist with this name") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Lime,
+                            cursorColor = Lime
+                        )
+                    )
+                    TextButton(onClick = {
+                        coverPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    }) { Text(if (hasCover) "Change cover photo" else "Add cover photo", color = Lime) }
+                    if (hasCover) {
+                        TextButton(onClick = { vm.removePlaylistCover(d.name) }) {
+                            Text("Remove cover photo", color = TextMid)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val old = d.name
+                    val n = newName.trim()
+                    if (n.isEmpty() || n == old) {
+                        showEdit = false
+                    } else if (n !in vm.playlists) {
+                        vm.renamePlaylist(old, n)
+                        showEdit = false
+                        onBack()
+                    }
+                }) { Text("Save", color = Lime) }
+            },
+            dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showAdd && d is Detail.PlaylistD) {
+        val inList = vm.playlists[d.name]?.toSet() ?: emptySet()
+        SongPickerSheet(
+            songs = vm.songs.filter { it.id !in inList },
+            title = "Add songs",
+            subtitle = "Tap every song you want, then add them",
+            multi = true,
+            max = 1000,
+            initial = emptyList(),
+            onClear = null,
+            onDone = { ids -> vm.addSongsToPlaylist(d.name, ids); showAdd = false },
+            onDismiss = { showAdd = false },
+            numbered = false
+        )
     }
 }
 
