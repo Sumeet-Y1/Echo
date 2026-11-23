@@ -20,6 +20,7 @@ import com.echoflux.echo.data.Post
 import com.echoflux.echo.data.Song
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -63,6 +64,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     var favorites by mutableStateOf<Set<Long>>(store.loadFavorites())
         private set
     var playlists by mutableStateOf<Map<String, List<Long>>>(store.loadPlaylists())
+        private set
+
+    var playlistCovers by mutableStateOf<Map<String, File>>(
+        store.loadPlaylistCovers()
+            .mapValues { File(app.filesDir, it.value) }
+            .filterValues { it.exists() }
+    )
         private set
 
     // ---- Profile state ----
@@ -131,6 +139,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Playback ----
 
     fun playFrom(list: List<Song>, index: Int, shuffleOn: Boolean? = null) {
+        clipJob?.cancel()
+        clipSnapshot = null
         val c = controller ?: return
         if (list.isEmpty()) return
         if (shuffleOn != null) c.shuffleModeEnabled = shuffleOn
@@ -218,7 +228,42 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         store.savePlaylists(playlists)
     }
 
+    fun addSongsToPlaylist(name: String, ids: List<Long>) {
+        val cur = playlists[name] ?: return
+        val fresh = ids.filter { it !in cur }
+        if (fresh.isEmpty()) return
+        playlists = playlists + (name to (cur + fresh))
+        store.savePlaylists(playlists)
+    }
+
+    fun setPlaylistCover(name: String, uri: Uri) {
+        viewModelScope.launch {
+            val file = copyImage(uri, "plcover") ?: return@launch
+            playlistCovers[name]?.delete()
+            playlistCovers = playlistCovers + (name to file)
+            store.savePlaylistCovers(playlistCovers.mapValues { it.value.name })
+        }
+    }
+
+    fun removePlaylistCover(name: String) {
+        playlistCovers[name]?.delete()
+        playlistCovers = playlistCovers - name
+        store.savePlaylistCovers(playlistCovers.mapValues { it.value.name })
+    }
+    fun renamePlaylist(oldName: String, newName: String) {
+        val n = newName.trim()
+        if (n.isEmpty() || n == oldName || n in playlists || oldName !in playlists) return
+        playlists = playlists.entries.associate { (if (it.key == oldName) n else it.key) to it.value }
+        val cover = playlistCovers[oldName]
+        if (cover != null) {
+            playlistCovers = playlistCovers - oldName + (n to cover)
+            store.savePlaylistCovers(playlistCovers.mapValues { it.value.name })
+        }
+        store.savePlaylists(playlists)
+    }
+
     fun deletePlaylist(name: String) {
+        removePlaylistCover(name)
         playlists = playlists - name
         store.savePlaylists(playlists)
     }
@@ -293,12 +338,87 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         store.saveTop(topIds)
     }
 
+    private class ClipSnapshot(
+        val songs: List<Song>,
+        val index: Int,
+        val positionMs: Long,
+        val wasPlaying: Boolean
+    )
+
+    private var clipSnapshot: ClipSnapshot? = null
+    private var clipJob: Job? = null
+
+    /** Plays only a slice of a song (posts and profile song). Loops until stopped. */
+    fun playClip(song: Song, startMs: Long, lenMs: Long, loop: Boolean = true) {
+        val c = controller ?: return
+        clipJob?.cancel()
+        if (clipSnapshot == null) {
+            clipSnapshot = ClipSnapshot(
+                queue, c.currentMediaItemIndex, c.currentPosition, c.playWhenReady
+            )
+        }
+        queue = listOf(song)
+        c.setMediaItems(listOf(mediaItemOf(song)), 0, startMs)
+        c.prepare()
+        c.play()
+        clipJob = viewModelScope.launch {
+            delay(400)
+            while (true) {
+                delay(100)
+                val cc = controller ?: break
+                if (cc.currentMediaItem?.mediaId != song.id.toString()) break
+                val dur = cc.duration
+                val end = if (dur > 0) minOf(startMs + lenMs, dur) else startMs + lenMs
+                if (cc.currentPosition >= end - 60) {
+                    if (loop) {
+                        cc.seekTo(startMs)
+                    } else {
+                        cc.pause()
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopClip() {
+        val hadClip = clipJob != null
+        clipJob?.cancel()
+        clipJob = null
+        val c = controller ?: return
+        val snap = clipSnapshot
+        if (snap == null) {
+            if (hadClip) c.pause()
+            return
+        }
+        clipSnapshot = null
+        if (snap.songs.isEmpty()) {
+            c.stop()
+            c.clearMediaItems()
+            queue = emptyList()
+            current = null
+            queueIndex = 0
+            isPlaying = false
+        } else {
+            queue = snap.songs
+            c.setMediaItems(snap.songs.map { mediaItemOf(it) }, snap.index, snap.positionMs)
+            c.prepare()
+            if (snap.wasPlaying) c.play() else c.pause()
+        }
+    }
+
     fun postFile(p: Post): File = File(getApplication<Application>().filesDir, p.image)
 
-    fun addPost(uri: Uri, songId: Long, caption: String) {
+    fun addPost(
+        uri: Uri,
+        songId: Long,
+        caption: String,
+        startMs: Long = 0L,
+        lenMs: Long = 30000L
+    ) {
         viewModelScope.launch {
             val file = copyImage(uri, "post") ?: return@launch
-            val post = Post(System.currentTimeMillis(), file.name, songId, caption.trim())
+            val post = Post(System.currentTimeMillis(), file.name, songId, caption.trim(), startMs, lenMs)
             posts = listOf(post) + posts
             store.savePosts(posts)
         }
