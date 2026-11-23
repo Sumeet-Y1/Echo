@@ -4,7 +4,14 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class Post(val id: Long, val image: String, val songId: Long, val caption: String)
+data class Post(
+    val id: Long,
+    val image: String,
+    val songId: Long,
+    val caption: String,
+    val startMs: Long = 0L,
+    val lenMs: Long = 30000L
+)
 
 class LibraryStore(context: Context) {
     private val prefs = context.getSharedPreferences("echo_library", Context.MODE_PRIVATE)
@@ -50,7 +57,11 @@ class LibraryStore(context: Context) {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
-                Post(o.getLong("id"), o.getString("image"), o.getLong("song"), o.optString("caption", ""))
+                Post(
+                    o.getLong("id"), o.getString("image"), o.getLong("song"),
+                    o.optString("caption", ""),
+                    o.optLong("start", 0L), o.optLong("len", 30000L)
+                )
             }
         } catch (e: Exception) {
             emptyList()
@@ -66,9 +77,35 @@ class LibraryStore(context: Context) {
                     .put("image", p.image)
                     .put("song", p.songId)
                     .put("caption", p.caption)
+                    .put("start", p.startMs)
+                    .put("len", p.lenMs)
             )
         }
         prefs.edit().putString("posts", arr.toString()).apply()
+    }
+
+    // ---- Playlist covers ----
+
+    fun loadPlaylistCovers(): Map<String, String> {
+        val raw = prefs.getString("plcovers", null) ?: return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        try {
+            val obj = JSONObject(raw)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                out[k] = obj.getString(k)
+            }
+        } catch (e: Exception) {
+            return emptyMap()
+        }
+        return out
+    }
+
+    fun savePlaylistCovers(covers: Map<String, String>) {
+        val obj = JSONObject()
+        for ((k, v) in covers) obj.put(k, v)
+        prefs.edit().putString("plcovers", obj.toString()).apply()
     }
 
     // ---- Favorites and playlists ----
