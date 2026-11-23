@@ -6,6 +6,11 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,6 +57,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -773,7 +780,7 @@ private fun EditProfileSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
 // =====================================================================
 
 @Composable
-private fun SongPickerSheet(
+ fun SongPickerSheet(
     songs: List<Song>,
     title: String,
     subtitle: String,
@@ -782,7 +789,8 @@ private fun SongPickerSheet(
     initial: List<Long>,
     onClear: (() -> Unit)?,
     onDone: (List<Long>) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    numbered: Boolean = true
 ) {
     var chosen by remember { mutableStateOf(initial) }
     var query by remember { mutableStateOf("") }
@@ -873,7 +881,7 @@ private fun SongPickerSheet(
                             contentAlignment = Alignment.Center
                         ) {
                             if (on) {
-                                if (multi) {
+                                if (multi && numbered) {
                                     Text(
                                         "${idx + 1}",
                                         color = OnLime,
@@ -899,7 +907,7 @@ private fun SongPickerSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     LimeButton(
-                        "Save ${chosen.size} of $max",
+                        if (max >= 1000) "Add ${chosen.size} songs" else "Save ${chosen.size} of $max",
                         Icons.Default.Check,
                         { onDone(chosen) }
                     )
@@ -973,6 +981,8 @@ private fun NewPostSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
     var songId by remember { mutableStateOf<Long?>(null) }
     var caption by remember { mutableStateOf("") }
     var showPicker by remember { mutableStateOf(false) }
+    var clipStart by remember { mutableStateOf(0L) }
+    var clipLen by remember { mutableStateOf(30000L) }
     val photoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> if (uri != null) imageUri = uri }
@@ -1078,6 +1088,19 @@ private fun NewPostSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(12.dp))
 
+            if (song != null) {
+                val enter = remember { MutableTransitionState(false).apply { targetState = true } }
+                AnimatedVisibility(
+                    visibleState = enter,
+                    enter = expandVertically(tween(380)) + fadeIn(tween(380))
+                ) {
+                    Column {
+                        Spacer(Modifier.height(16.dp))
+                        ClipPicker(vm, song, clipStart, clipLen) { s, l -> clipStart = s; clipLen = l }
+                        Spacer(Modifier.height(16.dp))
+                    }
+                }
+            }
             OutlinedTextField(
                 value = caption,
                 onValueChange = { if (it.length <= 140) caption = it },
@@ -1101,7 +1124,7 @@ private fun NewPostSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
                 LimeButton(
                     "Post",
                     Icons.Default.Check,
-                    { vm.addPost(readyUri, readySong, caption); onDismiss() }
+                    { vm.addPost(readyUri, readySong, caption, clipStart, clipLen); onDismiss() }
                 )
             } else {
                 Text(
@@ -1122,7 +1145,7 @@ private fun NewPostSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
             max = 1,
             initial = listOfNotNull(songId),
             onClear = null,
-            onDone = { songId = it.firstOrNull(); showPicker = false },
+            onDone = { songId = it.firstOrNull(); clipStart = 0L; showPicker = false },
             onDismiss = { showPicker = false }
         )
     }
@@ -1132,6 +1155,10 @@ private fun NewPostSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
 private fun PostViewerSheet(vm: PlayerViewModel, post: Post, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val song = remember(vm.songs, post.songId) { vm.songs.firstOrNull { it.id == post.songId } }
+    LaunchedEffect(post.id, song?.id) {
+        if (song != null) vm.playClip(song, post.startMs, post.lenMs)
+    }
+    DisposableEffect(post.id) { onDispose { vm.stopClip() } }
     val isCurrent = song != null && vm.current?.id == song.id
 
     ModalBottomSheet(
